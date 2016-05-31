@@ -21,44 +21,37 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
             public static final String GLOBAL_SERVLET_PATTERN = "/globalServlet";
             public static final String GLOBAL_SERVLET_NAME = "globalServlet";
 
-            public boolean intercept(
-                    @SuperCall Callable<Boolean> zuper
-                    , @Argument(0) InputSource source
-                    , @Argument(1) Object dest
-                    , @Argument(2) boolean fragment
+            public void intercept(
+                    @SuperCall Callable<Void> zuper
                     , @This Object self
             ) {
                 try {
-                    boolean ok = zuper.call();
+                    Method getServletMappings = self.getClass().getMethod("getServletMappings");
+                    Map<String, String> mappings = (Map<String, String>)getServletMappings.invoke(self);
 
-                    if (!fragment) {
-                        Method getServletMappings = dest.getClass().getMethod("getServletMappings");
-                        Map<String, String> mappings = (Map<String, String>)getServletMappings.invoke(dest);
+                    if (!mappings.containsKey(GLOBAL_SERVLET_PATTERN)) {
+                        ClassLoader loader = self.getClass().getClassLoader();
 
-                        if (!mappings.containsKey(GLOBAL_SERVLET_PATTERN)) {
-                            ClassLoader loader = self.getClass().getClassLoader();
+                        Class<?> servletDefClass = Class
+                                .forName("org.apache.catalina.deploy.ServletDef", true, loader);
 
-                            Class<?> servletDefClass = Class
-                            .forName("org.apache.tomcat.util.descriptor.web.ServletDef", true, loader);
+                        Object servletDef = servletDefClass.newInstance();
 
-                            Object servletDef = servletDefClass.newInstance();
+                        servletDefClass.getMethod("setServletClass", String.class)
+                                .invoke(servletDef, "io.tair.myagent.GlobalServlet");
 
-                            servletDefClass.getMethod("setServletClass", String.class)
-                            .invoke(servletDef, "io.tair.myagent.GlobalServlet");
+                        servletDefClass.getMethod("setServletName", String.class)
+                                .invoke(servletDef, GLOBAL_SERVLET_NAME);
 
-                            servletDefClass.getMethod("setServletName", String.class)
-                            .invoke(servletDef, GLOBAL_SERVLET_NAME);
+                        self.getClass().getMethod("addServlet", servletDefClass)
+                                .invoke(self, servletDef);
 
-                            dest.getClass().getMethod("addServlet", servletDefClass)
-                            .invoke(dest, servletDef);
-
-                            dest.getClass().getMethod("addServletMapping", String.class, String.class)
-                            .invoke(dest, GLOBAL_SERVLET_PATTERN, GLOBAL_SERVLET_NAME);
-                        }
-
+                        self.getClass().getMethod("addServletMapping", String.class, String.class)
+                                .invoke(self, GLOBAL_SERVLET_PATTERN, GLOBAL_SERVLET_NAME);
                     }
 
-                    return ok;
+                    zuper.call();
+
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
@@ -69,11 +62,10 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
         public static void premain(String agentArgs, Instrumentation inst) {
 
             new AgentBuilder.Default()
-                .type(named("org.apache.tomcat.util.descriptor.web.WebXmlParser"))
+                .type(named("org.apache.catalina.deploy.WebXml"))
                 .transform((builder, typeDescription, classLoader) ->
                     builder.method (
-                        named("parseWebXml")
-                        .and(takesArgument(0, InputSource.class))
+                        named("configureContext")
                     )
                     .intercept(MethodDelegation.to(new Target()))
                 )
